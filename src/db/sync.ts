@@ -22,6 +22,13 @@ const COLLECTION_MAP: Record<string, string> = {
   salesDetails: 'salesDetails',
   purchaseHeaders: 'purchaseHeaders',
   purchaseDetails: 'purchaseDetails',
+  eggCollections: 'eggCollections',
+  eggInventory: 'eggInventory',
+  eggStockMovements: 'eggStockMovements',
+  feedInventory: 'feedInventory',
+  feedStockMovements: 'feedStockMovements',
+  feedPurchases: 'feedPurchases',
+  feedConsumptions: 'feedConsumptions',
 };
 
 export async function queueSync(collectionName: string, recordId: number, operation: 'create' | 'update' | 'delete', data: unknown) {

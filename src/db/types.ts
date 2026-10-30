@@ -94,10 +94,133 @@ export interface DailyReport {
 export interface EggProduction {
   id?: number;
   reportId?: number;
+  collectionId?: number;
+  collectionTime?: string;
+  session?: 'Morning' | 'Afternoon' | 'Evening' | 'Other';
+  crates?: number;
+  pieces?: number;
   totalPieces: number;
   cracked: number;
   damaged: number;
+  goodEggs?: number;
   notes: string;
+}
+
+export interface EggCollection {
+  id?: number;
+  farmId: string;
+  date: string; // YYYY-MM-DD
+  time: string; // HH:mm
+  session: 'Morning' | 'Afternoon' | 'Evening' | 'Other';
+  batchId: number;
+  batchName: string;
+  crates: number;
+  pieces: number;
+  totalPieces: number; // Crates * crateCapacity + pieces
+  cracked: number;
+  damaged: number;
+  goodEggs: number; // totalPieces - cracked - damaged
+  crateCapacity: number; // default 30
+  notes: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  syncStatus: 'pending' | 'synced' | 'failed' | 'conflicted';
+}
+
+export interface EggInventory {
+  id?: number;
+  farmId: string;
+  goodEggsPieces: number; // individual pieces
+  crackedEggsPieces: number; // individual pieces
+  damagedEggsPieces: number; // loss tracking
+  crateCapacity: number;
+  lastUpdated: string;
+  syncStatus: 'pending' | 'synced' | 'failed' | 'conflicted';
+}
+
+export interface EggStockMovement {
+  id?: number;
+  farmId: string;
+  date: string;
+  time: string;
+  type: 'production' | 'sale' | 'adjustment' | 'loss' | 'reversal';
+  goodEggsChange: number;
+  crackedEggsChange: number;
+  damagedEggsChange: number;
+  goodEggsBalance: number;
+  crackedEggsBalance: number;
+  referenceType: 'collection' | 'sale_invoice' | 'manual_adjustment';
+  referenceId: string | number;
+  reason: string;
+  createdBy: string;
+  createdAt: string;
+  syncStatus: 'pending' | 'synced' | 'failed' | 'conflicted';
+}
+
+export interface FeedInventoryItem {
+  id?: number;
+  farmId: string;
+  feedType: string;
+  balanceGrams: number; // authoritative integer grams
+  minStockGrams: number;
+  lastUpdated: string;
+  syncStatus: 'pending' | 'synced' | 'failed' | 'conflicted';
+}
+
+export interface FeedStockMovement {
+  id?: number;
+  farmId: string;
+  date: string;
+  feedType: string;
+  type: 'purchase' | 'consumption' | 'adjustment_in' | 'adjustment_out' | 'reversal';
+  quantityGrams: number;
+  changeGrams: number;
+  balanceGrams: number;
+  referenceType: 'purchase' | 'consumption' | 'manual_adjustment';
+  referenceId: string | number;
+  reason: string;
+  createdBy: string;
+  createdAt: string;
+  syncStatus: 'pending' | 'synced' | 'failed' | 'conflicted';
+}
+
+export interface FeedPurchaseRecord {
+  id?: number;
+  farmId: string;
+  purchaseDate: string;
+  feedType: string;
+  feedBrand?: string;
+  quantityGrams: number; // authoritative integer grams
+  bagsInput?: number;
+  kgInput?: number;
+  unitPrice?: number;
+  totalCost?: number;
+  supplierName?: string;
+  invoiceNumber?: string;
+  notes?: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  syncStatus: 'pending' | 'synced' | 'failed' | 'conflicted';
+}
+
+export interface FeedConsumptionRecord {
+  id?: number;
+  farmId: string;
+  consumptionDate: string;
+  session: 'Morning' | 'Afternoon' | 'Evening' | 'Other';
+  feedType: string;
+  quantityGrams: number; // authoritative integer grams
+  bagsInput?: number;
+  kgInput?: number;
+  batchId?: number;
+  batchName?: string;
+  notes?: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  syncStatus: 'pending' | 'synced' | 'failed' | 'conflicted';
 }
 
 export interface MortalityRecord {
@@ -107,6 +230,7 @@ export interface MortalityRecord {
   reason: string;
   otherReason?: string;
   notes: string;
+  timePeriod: 'Early Morning' | 'Morning' | 'Afternoon' | 'Evening' | 'Night';
 }
 
 export interface FeedIntake {
@@ -129,7 +253,10 @@ export interface MedicationRecord {
   administrationMethod: string;
   supplier: string;
   notes: string;
+  administeredBy: string;
+  timeGiven: 'Early Morning' | 'Morning' | 'Afternoon' | 'Evening' | 'Night';
 }
+
 
 export interface WeightRecord {
   id?: number;

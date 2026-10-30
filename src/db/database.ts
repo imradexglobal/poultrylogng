@@ -3,8 +3,12 @@ import type {
   Farm, ImportLog, Batch, DailyReport, Product, Purchase, Sale, SyncQueue, Attachment, Customer, CustomerPayment,
   Supplier, SupplierPayment, SupplierAdjustment, Setting, Bank, PaymentMethodRecord,
   ProductCategoryRecord, UnitRecord, NumberSequence, SalesHeader, SalesDetail,
-  PurchaseHeader, PurchaseDetail, FarmMembership, Notification
+  PurchaseHeader, PurchaseDetail, FarmMembership, Notification,
+  EggCollection, EggInventory, EggStockMovement, FeedInventoryItem, FeedStockMovement,
+  FeedPurchaseRecord, FeedConsumptionRecord
 } from './types';
+import { FEED_TYPES } from './types';
+import { DEFAULT_CRATE_CAPACITY, cratesAndPiecesToTotalEggs, calculateGoodEggs } from '@/utils/conversions';
 
 const DEFAULT_FARM_ID = 'default-farm';
 
@@ -35,6 +39,13 @@ class FarmDatabase extends Dexie {
   purchaseDetails!: Table<PurchaseDetail, number>;
   memberships!: Table<FarmMembership, number>;
   notifications!: Table<Notification, number>;
+  eggCollections!: Table<EggCollection, number>;
+  eggInventory!: Table<EggInventory, number>;
+  eggStockMovements!: Table<EggStockMovement, number>;
+  feedInventory!: Table<FeedInventoryItem, number>;
+  feedStockMovements!: Table<FeedStockMovement, number>;
+  feedPurchases!: Table<FeedPurchaseRecord, number>;
+  feedConsumptions!: Table<FeedConsumptionRecord, number>;
 
   constructor() {
     super('PoultryLogNG');
@@ -93,6 +104,16 @@ class FarmDatabase extends Dexie {
     this.version(6).stores({
       memberships: '++id, membershipId, farmId, userEmail, firebaseUid, status, [farmId+userEmail], [userEmail+status]',
       notifications: '++id, farmId, type, targetEmail, read, [farmId+targetEmail], [targetEmail+read]',
+    });
+
+    this.version(7).stores({
+      eggCollections: '++id, farmId, date, time, session, batchId, syncStatus, [farmId+date], [farmId+date+batchId]',
+      eggInventory: '++id, farmId, syncStatus',
+      eggStockMovements: '++id, farmId, date, type, referenceType, referenceId, syncStatus, [farmId+date]',
+      feedInventory: '++id, farmId, feedType, syncStatus, [farmId+feedType]',
+      feedStockMovements: '++id, farmId, date, feedType, type, referenceType, referenceId, syncStatus, [farmId+date]',
+      feedPurchases: '++id, farmId, purchaseDate, feedType, syncStatus, [farmId+purchaseDate]',
+      feedConsumptions: '++id, farmId, consumptionDate, feedType, batchId, syncStatus, [farmId+consumptionDate]',
     });
   }
 }
@@ -207,8 +228,14 @@ export async function migrateDataIfNeeded(): Promise<void> {
   }
 
   const migratedV5 = await getSetting('_schema_migrated_v5', '', DEFAULT_FARM_ID);
-  if (migratedV5 === 'true') return;
-  await runV5Migration();
+  if (migratedV5 !== 'true') {
+    await runV5Migration();
+  }
+
+  const migratedV7 = await getSetting('_schema_migrated_v7', '', DEFAULT_FARM_ID);
+  if (migratedV7 !== 'true') {
+    await runV7Migration();
+  }
 }
 
 async function runV4Migration(): Promise<void> {
@@ -481,6 +508,152 @@ async function runV5Migration(): Promise<void> {
   // Set active farm
   localStorage.setItem('activeFarmId', DEFAULT_FARM_ID);
   await setSetting('_schema_migrated_v5', 'true', 'system', DEFAULT_FARM_ID);
+}
+
+async function runV7Migration(): Promise<void> {
+  const now = nowISO();
+  const allFarms = await db.farms.toArray();
+  const farmIds = allFarms.length > 0 ? allFarms.map(f => f.farmId) : [DEFAULT_FARM_ID];
+
+  for (const farmId of farmIds) {
+    // 1. Ensure default crate capacity setting
+    const crateCap = await getSetting('default_crate_capacity', '', farmId);
+    if (!crateCap) {
+      await setSetting('default_crate_capacity', String(DEFAULT_CRATE_CAPACITY), 'production', farmId);
+    }
+
+    // 2. Ensure egg inventory record exists
+    const existingEggInv = await db.eggInventory.where('farmId').equals(farmId).first();
+    if (!existingEggInv) {
+      await db.eggInventory.add({
+        farmId,
+        goodEggsPieces: 0,
+        crackedEggsPieces: 0,
+        damagedEggsPieces: 0,
+        crateCapacity: DEFAULT_CRATE_CAPACITY,
+        lastUpdated: now,
+        syncStatus: 'synced',
+      });
+    }
+
+    // 3. Ensure feed inventory records for standard feed types
+    for (const feedType of FEED_TYPES) {
+      const existingFeed = await db.feedInventory.where({ farmId, feedType }).first();
+      if (!existingFeed) {
+        await db.feedInventory.add({
+          farmId,
+          feedType,
+          balanceGrams: 0,
+          minStockGrams: 50000, // 2 bags default min stock
+          lastUpdated: now,
+          syncStatus: 'synced',
+        });
+      }
+    }
+
+    // 4. Migrate existing dailyReports eggProduction into eggCollections if eggCollections is empty
+    const collectionsCount = await db.eggCollections.where('farmId').equals(farmId).count();
+    if (collectionsCount === 0) {
+      const reports = await db.dailyReports.where('farmId').equals(farmId).toArray();
+      let totalGoodAdded = 0;
+      let totalCrackedAdded = 0;
+      let totalDamagedAdded = 0;
+
+      for (const report of reports) {
+        const batch = report.batchName || `Batch #${report.batchId}`;
+        const eggItems = report.eggProduction || [];
+        const sessions: Array<'Morning' | 'Afternoon' | 'Evening' | 'Other'> = ['Morning', 'Afternoon', 'Evening', 'Other'];
+
+        for (let i = 0; i < eggItems.length; i++) {
+          const item = eggItems[i];
+          if (item.totalPieces > 0 || item.cracked > 0 || item.damaged > 0) {
+            const crates = Math.floor(item.totalPieces / DEFAULT_CRATE_CAPACITY);
+            const pieces = item.totalPieces % DEFAULT_CRATE_CAPACITY;
+            const good = calculateGoodEggs(item.totalPieces, item.cracked, item.damaged);
+            const sess = sessions[i] || 'Other';
+            const collTime = sess === 'Morning' ? '08:00' : sess === 'Afternoon' ? '13:00' : sess === 'Evening' ? '17:30' : '12:00';
+
+            const collId = await db.eggCollections.add({
+              farmId,
+              date: report.reportDate,
+              time: collTime,
+              session: sess,
+              batchId: report.batchId,
+              batchName: batch,
+              crates,
+              pieces,
+              totalPieces: item.totalPieces,
+              cracked: item.cracked || 0,
+              damaged: item.damaged || 0,
+              goodEggs: good,
+              crateCapacity: DEFAULT_CRATE_CAPACITY,
+              notes: item.notes || '',
+              createdBy: report.createdBy || 'system',
+              createdAt: report.createdAt || now,
+              updatedAt: report.updatedAt || now,
+              syncStatus: 'synced',
+            });
+
+            totalGoodAdded += good;
+            totalCrackedAdded += (item.cracked || 0);
+            totalDamagedAdded += (item.damaged || 0);
+
+            // Record movement
+            await db.eggStockMovements.add({
+              farmId,
+              date: report.reportDate,
+              time: collTime,
+              type: 'production',
+              goodEggsChange: good,
+              crackedEggsChange: item.cracked || 0,
+              damagedEggsChange: item.damaged || 0,
+              goodEggsBalance: totalGoodAdded,
+              crackedEggsBalance: totalCrackedAdded,
+              referenceType: 'collection',
+              referenceId: collId,
+              reason: `Initial migration from report ${report.reportDate}`,
+              createdBy: report.createdBy || 'system',
+              createdAt: report.createdAt || now,
+              syncStatus: 'synced',
+            });
+          }
+        }
+
+        // Migrate feed intake records
+        for (const f of (report.feedIntake || [])) {
+          if (f.quantityGrams > 0) {
+            await db.feedConsumptions.add({
+              farmId,
+              consumptionDate: report.reportDate,
+              session: (f.feedingSession as 'Morning' | 'Afternoon' | 'Evening' | 'Other') || 'Morning',
+              feedType: f.feedType || 'Starter',
+              quantityGrams: f.quantityGrams,
+              batchId: report.batchId,
+              batchName: batch,
+              notes: f.notes || '',
+              createdBy: report.createdBy || 'system',
+              createdAt: report.createdAt || now,
+              updatedAt: report.updatedAt || now,
+              syncStatus: 'synced',
+            });
+          }
+        }
+      }
+
+      // Update egg inventory with migrated totals if stock was at 0
+      const currentEggInv = await db.eggInventory.where('farmId').equals(farmId).first();
+      if (currentEggInv && currentEggInv.goodEggsPieces === 0 && totalGoodAdded > 0) {
+        await db.eggInventory.update(currentEggInv.id!, {
+          goodEggsPieces: totalGoodAdded,
+          crackedEggsPieces: totalCrackedAdded,
+          damagedEggsPieces: totalDamagedAdded,
+          lastUpdated: now,
+        });
+      }
+    }
+  }
+
+  await setSetting('_schema_migrated_v7', 'true', 'system', DEFAULT_FARM_ID);
 }
 
 // ==================== IMPORT LOG HELPERS ====================

@@ -1,7 +1,9 @@
-import { useRef, useCallback } from 'react';
+import { useRef, useCallback, useState } from 'react';
 import { Modal, EmptyState } from '@/components/UI';
 import { useToast } from '@/components/ToastProvider';
 import type { DailyReport, Batch } from '@/db/types';
+import { generateWhatsAppDailyReportText, openWhatsAppShare } from '@/utils/whatsappReport';
+import { calculateGoodEggs } from '@/utils/conversions';
 
 const EGGS_PER_CRATE = 30;
 const GRAMS_PER_BAG = 25000;
@@ -473,6 +475,54 @@ export default function DailyReportShare({ open, onClose, report, batch, farmNam
   const previewRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
+  const [previewTab, setPreviewTab] = useState<'whatsapp' | 'image'>('whatsapp');
+
+  const whatsAppText = report ? generateWhatsAppDailyReportText({
+    farmName,
+    dateStr: report.reportDate,
+    crateCapacity: EGGS_PER_CRATE,
+    collections: (report.eggProduction || []).map((e, idx) => {
+      const sess = e.session || (idx === 0 ? 'Morning' : idx === 1 ? 'Afternoon' : idx === 2 ? 'Evening' : `Session #${idx + 1}`);
+      const crates = e.crates !== undefined ? e.crates : Math.floor(e.totalPieces / EGGS_PER_CRATE);
+      const pieces = e.pieces !== undefined ? e.pieces : (e.totalPieces % EGGS_PER_CRATE);
+      return {
+        session: sess,
+        time: e.collectionTime,
+        crates,
+        pieces,
+        totalPieces: e.totalPieces,
+        cracked: e.cracked || 0,
+        damaged: e.damaged || 0,
+        goodEggs: e.goodEggs !== undefined ? e.goodEggs : calculateGoodEggs(e.totalPieces, e.cracked, e.damaged),
+      };
+    }),
+    mortalityTotal: (report.mortality || []).reduce((s, m) => s + m.numberDead, 0),
+    feedKgTotal: (report.feedIntake || []).reduce((s, f) => s + f.quantityGrams, 0) / 1000,
+    notes: report.notes,
+  }) : '';
+
+  const handleCopyWhatsAppText = useCallback(async () => {
+    if (!whatsAppText) return;
+    try {
+      await navigator.clipboard.writeText(whatsAppText);
+      toast('WhatsApp report copied! You can paste directly into WhatsApp chat.', 'success');
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = whatsAppText;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      toast('WhatsApp report copied!', 'success');
+    }
+  }, [whatsAppText, toast]);
+
+  const handleOpenWhatsApp = useCallback(() => {
+    if (!whatsAppText) return;
+    openWhatsAppShare(whatsAppText);
+    toast('Opening WhatsApp Click to Chat...', 'info');
+  }, [whatsAppText, toast]);
+
   const handleCopyText = useCallback(async () => {
     if (!report) return;
     const text = generatePlainText(report, batch, farmName, recordedBy);
@@ -555,20 +605,24 @@ export default function DailyReportShare({ open, onClose, report, batch, farmNam
       title="Share Daily Report"
       onClose={onClose}
       footer={
-        <>
-          <button className="btn btn-outline" onClick={handleCopyText}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end', width: '100%' }}>
+          <button className="btn btn-outline" onClick={handleCopyWhatsAppText}>
             <span className="material-icons-outlined" style={{ fontSize: 18 }}>content_copy</span>
             Copy Text
           </button>
           <button className="btn btn-outline" onClick={handleDownloadImage}>
             <span className="material-icons-outlined" style={{ fontSize: 18 }}>download</span>
-            Download Image
+            Download Card
           </button>
-          <button className="btn btn-primary" onClick={handleShareImage}>
-            <span className="material-icons-outlined" style={{ fontSize: 18 }}>share</span>
-            Share as Image
+          <button
+            className="btn"
+            style={{ background: '#25D366', color: '#fff', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            onClick={handleOpenWhatsApp}
+          >
+            <span className="material-icons-outlined" style={{ fontSize: 18 }}>chat</span>
+            Share on WhatsApp
           </button>
-        </>
+        </div>
       }
     >
       {!hasAnyData ? (
@@ -579,14 +633,52 @@ export default function DailyReportShare({ open, onClose, report, batch, farmNam
         />
       ) : (
         <>
-          <p className="text-sm text-secondary mb-3">Preview below, then choose how to share.</p>
-          <div className="share-report-card-wrapper">
-            <div ref={previewRef} className="share-report-card">
-              <div className="share-report-header">
-                <div className="share-report-logo">🐔</div>
-                <h2>PoultryLog NG</h2>
-                <p>Daily Activity Report</p>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+            <button
+              className={`btn btn-sm ${previewTab === 'whatsapp' ? 'btn-primary' : 'btn-outline'}`}
+              onClick={() => setPreviewTab('whatsapp')}
+            >
+              WhatsApp Preview
+            </button>
+            <button
+              className={`btn btn-sm ${previewTab === 'image' ? 'btn-primary' : 'btn-outline'}`}
+              onClick={() => setPreviewTab('image')}
+            >
+              Graphic Card Preview
+            </button>
+          </div>
+
+          {previewTab === 'whatsapp' ? (
+            <div style={{
+              background: '#075E54',
+              padding: 12,
+              borderRadius: 12,
+              marginBottom: 12,
+            }}>
+              <div style={{
+                background: '#ECE5DD',
+                padding: 14,
+                borderRadius: 8,
+                fontFamily: 'system-ui, -apple-system, sans-serif',
+                fontSize: 13,
+                lineHeight: 1.5,
+                color: '#111',
+                whiteSpace: 'pre-wrap',
+                maxHeight: 380,
+                overflowY: 'auto',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+              }}>
+                {whatsAppText}
               </div>
+            </div>
+          ) : (
+            <div className="share-report-card-wrapper">
+              <div ref={previewRef} className="share-report-card">
+                <div className="share-report-header">
+                  <div className="share-report-logo">🐔</div>
+                  <h2>PoultryLog NG</h2>
+                  <p>Daily Activity Report</p>
+                </div>
 
               <div className="share-report-meta">
                 <div>Farm: <strong>{farmName}</strong></div>
@@ -686,6 +778,7 @@ export default function DailyReportShare({ open, onClose, report, batch, farmNam
               </div>
             </div>
           </div>
+          )}
         </>
       )}
     </Modal>
